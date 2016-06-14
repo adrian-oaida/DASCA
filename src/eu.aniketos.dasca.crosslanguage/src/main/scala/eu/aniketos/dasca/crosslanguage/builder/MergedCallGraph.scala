@@ -15,6 +15,8 @@ import com.ibm.wala.ipa.callgraph.CGNode
 import com.ibm.wala.ipa.callgraph.CallGraph
 import com.ibm.wala.classLoader.CallSiteReference
 import com.ibm.wala.classLoader.Language
+import com.ibm.wala.dataflow.IFDS.ICFGSupergraph;
+
 import scala.xml.XML
 import scala.xml.Elem
 import scala.collection.JavaConverters._
@@ -48,19 +50,20 @@ import eu.aniketos.dasca.crosslanguage.util.Util
 import scala.collection.mutable.Queue
 import scala.collection.mutable.ListBuffer
 import com.ibm.wala.cast.ir.ssa.AstIRFactory
+import com.ibm.wala.cast.ir.ssa.AstIR
 import scala.collection.mutable.LinkedHashSet
+import com.ibm.wala.types.TypeReference
 
-class MergedCallGraph(val javaCG: CallGraph, val jsCG: CallGraph, val configXml: Elem) extends Iterable[CGNode] {
-  val logger = Logger(LoggerFactory.getLogger(getClass.toString))
+class MergedCallGraph(val javaCG: CallGraph, val javaICFG: ICFGSupergraph,  val jsCG: CallGraph, val jsICFG: ICFGSupergraph, val configXml: Elem) extends Iterable[CGNode] with Serializable {
+  @transient val logger = Logger(LoggerFactory.getLogger(getClass.toString))
   var targets = Map[(CGNode, CallSiteReference), LinkedHashSet[CGNode]]()
   var origins = Map[CGNode, LinkedHashSet[(CGNode, CallSiteReference)]]()
   var paramInfo = Map[(CGNode, CallSiteReference), String]()
   var paramMap = Map[(CGNode, CallSiteReference, CGNode), Map[Int, Set[Int]]]()
-
   var filterJavaCallSites = false
   var filterJSFrameworks = false
 
-  lazy val classNames = {
+  @transient lazy val classNames = {
     for (
       feature <- configXml \\ "feature";
       param <- feature \ "param" if param \@ "name" == "android-package"
@@ -76,7 +79,7 @@ class MergedCallGraph(val javaCG: CallGraph, val jsCG: CallGraph, val configXml:
     ) yield ((access.variableDefiner, access.variableName), (node, write, use))
   }.toSeq.groupBy(_._1).mapValues(_.map(_._2))
 
-  lazy val executeNodesForClassName = {
+  @transient lazy val executeNodesForClassName = {
     for (
       node <- javaCG.iterator.asScala;
       method = node.getMethod if method.getName.toString() == "execute";
@@ -164,11 +167,12 @@ class MergedCallGraph(val javaCG: CallGraph, val jsCG: CallGraph, val configXml:
 
     val successNodes = findFunctionNodes(2, node, invoke, jsExecuteNode)
     logger.info(s"Found ${successNodes.size} success nodes for action $action, ${Util.prettyPrintInstruction(node, invoke)}");
-    val reachableSuccessCalls = if (filterJavaCallSites) {
-      successCalls.filter({ case (successNode, successInvoke) => reachabilityChecker.isReachable(executeNode, successNode, successInvoke) })
-    } else {
-      successCalls.filter({ case (n, _) => packageFilter(n) })
-    }
+//    val reachableSuccessCalls = if (filterJavaCallSites) {
+//      successCalls.filter({ case (successNode, successInvoke) => reachabilityChecker.isReachable(executeNode, successNode, successInvoke) })
+//    } else {
+//      successCalls.filter({ case (n, _) => packageFilter(n) })
+//    }
+    val reachableSuccessCalls = successCalls.filter({ case (n, _) => packageFilter(n) })
     for (
       successTarget <- successNodes;
       _ = logger.debug(s"\t-> ${Util.prettyPrintInstruction(successTarget, successTarget.getIR.getInstructions.find { _ != null } get)}");
@@ -179,11 +183,12 @@ class MergedCallGraph(val javaCG: CallGraph, val jsCG: CallGraph, val configXml:
 
     val failNodes = findFunctionNodes(3, node, invoke, jsExecuteNode)
     logger.info(s"Found ${failNodes.size} fail nodes for action $action, ${Util.prettyPrintInstruction(node, invoke)}")
-    val reachableFailCalls = if (filterJavaCallSites) {
-      failCalls.filter({ case (failNode, failInvoke) => reachabilityChecker.isReachable(executeNode, failNode, failInvoke) })
-    } else {
-      failCalls.filter({ case (n, _) => packageFilter(n) })
-    }
+//    val reachableFailCalls = if (filterJavaCallSites) {
+//      failCalls.filter({ case (failNode, failInvoke) => reachabilityChecker.isReachable(executeNode, failNode, failInvoke) })
+//    } else {
+//      failCalls.filter({ case (n, _) => packageFilter(n) })
+//    }
+    val reachableFailCalls = failCalls.filter({ case (n, _) => packageFilter(n) })
     for (
       failTarget <- failNodes;
       _ = logger.debug(s"\t-> ${Util.prettyPrintInstruction(failTarget, failTarget.getIR.getInstructions.find { _ != null } get)}");
@@ -191,6 +196,8 @@ class MergedCallGraph(val javaCG: CallGraph, val jsCG: CallGraph, val configXml:
     ) {
       addCrossCall(failFrom, failInvoke.getCallSite, failTarget, Map(1 -> Set(3)))
     }
+    
+
   }
 
   def findFeatureString(st: SymbolTable, node: CGNode, invoke: SSAAbstractInvokeInstruction) = {
@@ -260,7 +267,7 @@ class MergedCallGraph(val javaCG: CallGraph, val jsCG: CallGraph, val configXml:
         case _ =>
       }
       to.getIR match {
-        case ir: AstIRFactory#AstIR => {
+        case ir: AstIR => {
           val (_, _, _, _, relPath) = Util.getJavaScriptSourceInfo(ir, ir.getInstructions.find(_ != null).get)
           val lc = relPath.toLowerCase()
           val filename = lc.substring(lc.lastIndexOf('/'))
@@ -275,7 +282,7 @@ class MergedCallGraph(val javaCG: CallGraph, val jsCG: CallGraph, val configXml:
       }
     } else {
       from.getIR match {
-        case ir: AstIRFactory#AstIR => {
+        case ir: AstIR => {
           val (_, _, _, _, relPath) = Util.getJavaScriptSourceInfo(ir, ir.getInstructions.find(_ != null).get)
           val lc = relPath.toLowerCase()
           val filename = lc.substring(lc.lastIndexOf('/'))
@@ -295,19 +302,30 @@ class MergedCallGraph(val javaCG: CallGraph, val jsCG: CallGraph, val configXml:
     paramInfo += (((from, csr), param))
   }
 
+  def getAllCrossTargetsAsJava = targets.asJava
   def getAllCrossTargets = targets
 
+  def getParamInfoAsJava = paramInfo.asJava
   def getCrossOrigins(node: CGNode) = origins.get(node) match {
     case Some(x) => x
     case None => LinkedHashSet[(CGNode, CallSiteReference)]()
   }
 
-  def getCrossTargets(node: CGNode, csr: CallSiteReference): LinkedHashSet[CGNode] = targets.get((node, csr)) match {
-    case Some(x) => x
-    case None => LinkedHashSet[CGNode]()
+  def getCrossTargets(node: CGNode, csr: CallSiteReference): java.util.Set[CGNode] = targets.get((node, csr)) match {
+    case Some(x) => {
+      x match {
+        case result: LinkedHashSet[CGNode] => result.asJava
+      }
+    }
+    case None => LinkedHashSet[CGNode]().asJava
   }
 
   def getParameterMapping(from: CGNode, csr: CallSiteReference, to: CGNode) = paramMap.get((from, csr, to))
+
+  def getParameterMappingAsJava(from: CGNode, csr: CallSiteReference, to: CGNode) = paramMap.get((from, csr, to)) match {
+    case Some(x) => x
+    case None => null
+  }
 
   def findFunctionNodes(arg: Int, node: CGNode, inst: SSAInstruction, jsExecuteNode: CGNode) = {
     for (

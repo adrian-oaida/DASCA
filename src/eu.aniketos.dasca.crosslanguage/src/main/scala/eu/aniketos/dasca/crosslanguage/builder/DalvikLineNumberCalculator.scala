@@ -50,7 +50,8 @@ object DalvikLineNumberCalculator {
         case AnnotationRegex() => inAnnotation = true
         case EndAnnotationRegex() => inAnnotation = false
         case InstructionRegex() if (inCorrectMethod && !inAnnotation) => {
-          method.setLineNumber(instCounter, lastLine)
+          // me thinks this is the point of failure
+          method.setCodeLineNumber(instCounter, lastLine)
           instCounter += 1
         }
         case _ =>

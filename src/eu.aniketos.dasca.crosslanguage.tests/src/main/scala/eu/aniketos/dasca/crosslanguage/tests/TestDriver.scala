@@ -22,6 +22,7 @@ import java.io.File
 import eu.aniketos.dasca.crosslanguage.util.JavaScriptSourceLocation
 import eu.aniketos.dasca.crosslanguage.util.JavaSourceLocation
 import com.ibm.wala.cast.ir.ssa.AstIRFactory
+import com.ibm.wala.cast.ir.ssa.AstIR
 import eu.aniketos.dasca.crosslanguage.util.SourceLocation
 import eu.aniketos.dasca.crosslanguage.builder.FilterJSFrameworks
 import scala.collection.mutable.LinkedHashSet
@@ -86,7 +87,7 @@ object TestDriver {
         }
       } else {
         origin._1.getIR match {
-          case ir: AstIRFactory#AstIR => (JavaScriptSourceLocation(ir, origin._2), JavaSourceLocation(target))
+          case ir: AstIR => (JavaScriptSourceLocation(ir, origin._2), JavaSourceLocation(target))
           case _ => (new JavaScriptSourceLocation(-1, -1, "unknown"), JavaSourceLocation(target))
         }
       }

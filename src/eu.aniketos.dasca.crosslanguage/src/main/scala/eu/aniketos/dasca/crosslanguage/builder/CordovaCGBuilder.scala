@@ -19,6 +19,8 @@ import scala.xml.XML
 import org.apache.commons.io.FileUtils
 import org.apache.commons.io.filefilter.IOFileFilter
 import org.apache.commons.io.filefilter.TrueFileFilter
+import com.ibm.wala.dataflow.IFDS.ICFGSupergraph;
+
 import com.ibm.wala.classLoader.IClass
 import com.ibm.wala.classLoader.IMethod
 import com.ibm.wala.dalvik.classLoader.DexIRFactory
@@ -83,12 +85,13 @@ import com.ibm.wala.dalvik.util.AndroidAnalysisScope
 import java.util.jar.JarFile
 import com.ibm.wala.types.ClassLoaderReference
 import com.ibm.wala.classLoader.JarFileModule
+import com.ibm.wala.dalvik.classLoader.DexFileModule
 
 object CordovaCGBuilder {
   val ExecuteSuffix = "walaexec"
   val ExclusionFile = new File("jsexclusions.txt")
   def apply(apk: File): CordovaCGBuilder = {
-    val tmpApkDir = new File(System.getProperty("java.io.tmpdir"), s"${apk.getName}-${Random.alphanumeric.take(16).mkString}")
+    val tmpApkDir = new File("/tmp/dasca/", s"${apk.getName}-${Random.alphanumeric.take(16).mkString}")
     tmpApkDir.deleteOnExit()
     CordovaCGBuilder(apk, tmpApkDir)
   }
@@ -100,10 +103,10 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
   val PluginsRegex = """(?s).*\.exports\s*=\s*(.+]).*""".r
   implicit val logger = Logger(LoggerFactory.getLogger(getClass.toString))
 
-  var mockCordovaExec = false
-  var filterJavaCallSites = false
-  var replacePluginDefinesAndRequires = false
-  var filterJSFrameworks = false
+  var mockCordovaExec = true
+  var filterJavaCallSites = true
+  var replacePluginDefinesAndRequires = true
+  var filterJSFrameworks = true
   var preciseJS = false
   var runBuildersInParallel = false
 
@@ -120,56 +123,56 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
   }
 
   def createCallGraph: MergedCallGraph = {
-    val mcg = if (runBuildersInParallel) {
-      val javaFuture = Future { Util.time("Creation of Java Call Graph", { createJavaCallGraph }) }
-      val jsFuture = Future { Util.time("Creation of JavaScript Call Graph", { createJavaScriptCallGraph }) }
-      waitForFutures(javaFuture, jsFuture)
-      val javaCG = javaFuture.value.get.get
-      val (jsCG, xml) = jsFuture.value.get.get
-      new MergedCallGraph(javaCG, jsCG, xml)
-      val mcgFuture = for {
-        javaCG <- javaFuture
-        jsCG <- jsFuture
-      } yield new MergedCallGraph(javaCG, jsCG._1, jsCG._2)
-      Await.result(mcgFuture, Duration.Inf)
-    } else {
-      val javaCG = Util.time("Creation of Java Call Graph", { createJavaCallGraph })
-      val (jsCG, xml) = Util.time("Creation of JavaScript Call Graph", { createJavaScriptCallGraph })
-      new MergedCallGraph(javaCG, jsCG, xml)
-    }
-
+    
+     val (javaCG, javaICFG) = Util.time("Creation of Java Call Graph", { createJavaCallGraph })
+     val (jsCG, jsICFG, xml) = Util.time("Creation of JavaScript Call Graph", { createJavaScriptCallGraph })
+     val mcg = new MergedCallGraph(javaCG, javaICFG, jsCG, jsICFG, xml)
     logger.info(s"The Java Call Graph has ${mcg.javaCG.getNumberOfNodes} nodes")
     logger.info(s"The JavaScript Call Graph has ${mcg.jsCG.getNumberOfNodes} nodes")
 
     DalvikLineNumberCalculator.setLineNumbers(apkUnzipDir, mcg.javaCG)
 
     logger.info("Connecting cross language calls...")
-    mcg.connect(filterJavaCallSites, filterJSFrameworks)
-    Util.time("Connecting the cross calls", { mcg.connect })(logger)
-
+    mcg.connect(false, true)
+    
     logger.info("The following calls have been found:")
     for (line <- Util.prettyPrintCrossTargets(mcg.getAllCrossTargets)) logger.info(line)
     logger.info("End of cross calls")
     mcg
+    
   }
-
-  private def createJavaCallGraph = {
+  def createJavaCallGraph: (CallGraph, ICFGSupergraph) = {
     val tmpAndroidJar = File.createTempFile("android", "jar")
+    val tmpAndroidFrameworkResJar = File.createTempFile("androidFrameworkRes", "dex")
     tmpAndroidJar.deleteOnExit()
-    TemporaryFile.urlToFile(tmpAndroidJar, getClass.getClassLoader.getResource("android19.jar"))
+    tmpAndroidFrameworkResJar.deleteOnExit()
+    
+    TemporaryFile.urlToFile(tmpAndroidJar, getClass.getClassLoader.getResource("android23.jar"))
+    
+    TemporaryFile.urlToFile(tmpAndroidFrameworkResJar, getClass.getClassLoader.getResource("framework.dex"))
+    
+    
     val scope = AndroidAnalysisScope.setUpAndroidAnalysisScope(apk.toURI(), getClass.getClassLoader.getResource("javaexclusions.txt").getFile, CordovaCGBuilder.getClass.getClassLoader())
     scope.addToScope(ClassLoaderReference.Primordial, new JarFileModule(new JarFile(tmpAndroidJar)))
+    scope.addToScope(ClassLoaderReference.Primordial, DexFileModule.make(tmpAndroidFrameworkResJar))
+
     val cha = ClassHierarchy.make(scope)
     val cache = new AnalysisCache(new DexIRFactory())
     val eps = new AndroidEntryPointLocator(Set(
-      LocatorFlags.INCLUDE_CALLBACKS, LocatorFlags.EP_HEURISTIC, LocatorFlags.CB_HEURISTIC).asJava)
+      LocatorFlags.INCLUDE_CALLBACKS, LocatorFlags.EP_HEURISTIC, LocatorFlags.CB_HEURISTIC, LocatorFlags.WITH_ANDROID, LocatorFlags.WITH_CTOR).asJava)
     val pluginEntryPoints = getPluginEntryPoints(cha)
     for (ep <- pluginEntryPoints) logger.info(s"Found cordova plugin entry point: $ep")
     val entryPoints = eps.getEntryPoints(cha).asScala ++ pluginEntryPoints
+        
     val options = new AnalysisOptions(scope, entryPoints.asJava);
     options.setReflectionOptions(ReflectionOptions.FULL);
     val cgb = WalaUtil.makeZeroCFABuilder(options, cache, cha, scope);
-    cgb.makeCallGraph(options, null);
+    logger.info(s"finished creating builder")
+    val cg = cgb.makeCallGraph(options, null);
+    logger.info(s"finished creating call graph")
+    val sg = ICFGSupergraph.make(cg, cache)
+    logger.info(s"finished creating super graph")
+    (cg, sg)
   }
 
   private def getPluginEntryPoints(cha: ClassHierarchy): List[Entrypoint] = for (
@@ -179,17 +182,18 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
     if m.getName.toString.equals("execute")
   ) yield new DexEntryPoint(m, cha)
 
-  private def createJavaScriptCallGraph: (CallGraph, Elem) = {
-    decodeApk(apk);
-    val configXml = XML.loadFile(new File(apkUnzipDir, "/res/xml/config.xml"))
-    val entrypoint = getEntryPoint(configXml)
-    if (!entrypoint.exists()) {
-      logger.error(s"Could not find entrypoint $entrypoint, using an empty call graph ...")
-      return (new EmptyCallGraph(), configXml)
-    }
-    val pluginInfos = getPluginInfos
+  
+  def createJavaScriptCallGraph: (CallGraph, ICFGSupergraph, Elem) = {
+        
+    decodeApk(apk)
+     val configXml = XML.loadFile(new File(apkUnzipDir, "/res/xml/config.xml"))
+     val entrypoint = getEntryPoint(configXml)
+
+     val pluginInfos = getPluginInfos
     val loaders = new WebPageLoaderFactory(new CAstRhinoTranslatorFactory())
+    
     val scripts = makeHtmlScope(entrypoint.toURI().toURL(), loaders, pluginInfos);
+
     preprocessApkDir(scripts, pluginInfos)
     val cache = new AnalysisCache(AstIRFactory.makeDefaultFactory())
     val scope = new CAstAnalysisScope(scripts.toArray, loaders, Collections.singleton(JavaScriptLoader.JS))
@@ -209,7 +213,8 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
       val builder = new OptimisticCallgraphBuilder(cha, JSCallGraphUtil.makeOptions(scope, cha, roots), cache, false)
       builder.buildCallGraph(roots, null).fst
     }
-    (cg, configXml)
+    val sg = ICFGSupergraph.make(cg, cache)
+    (cg, sg, configXml)
   }
 
   private def makeHtmlScope(url: URL, loaders: JavaScriptLoaderFactory, pluginInfos: List[PluginInfo]): List[SourceModule] = {
@@ -270,7 +275,12 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
       case PluginsRegex(jsonArray) => jsonArray
       case _ => throw new IllegalArgumentException("Could not parse plugin section of cordova_plugins.js!")
     }
-    val list = jsonArray.parseJson.convertTo[List[Map[String, JsValue]]]
+    // TODO make proper json format, replace :_ !0 with : true
+    // replace file: with "file": 
+    // replace id: with "id":
+    // replace clobbers with "clobbers": 
+    
+    val list = jsonArray.replace("runs:","\"runs\":").replace("merges:", "\"merges\":").replace("file:", "\"file\":").replace("id:","\"id\":").replace("clobbers:", "\"clobbers\":").replace("!0", "true").parseJson.convertTo[List[Map[String, JsValue]]]
     for (info <- list) {
       val fileName = info.get("file").get.convertTo[String]
       val file = new File(cordovaPluginJs.getParentFile, fileName)
@@ -282,7 +292,9 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
       }
       lb += new PluginInfo(fileName, id, clobbers, file)
     }
+    for (line <- lb) logger.info(line.fileName.toString())
 
+    logger.info(s"")
     lb.toList
   }
 
@@ -369,7 +381,7 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
   def setOptions(options: CrossBuilderOption*) = for (option <- options) option match {
     case MockCordovaExec => mockCordovaExec = true
     case ReplacePluginDefinesAndRequires => replacePluginDefinesAndRequires = true
-    case FilterJavaCallSites => filterJavaCallSites = true
+    case FilterJavaCallSites => filterJavaCallSites = false
     case FilterJSFrameworks => filterJSFrameworks = true
     case PreciseJS => preciseJS = true
     case RunBuildersInParallel => runBuildersInParallel = true

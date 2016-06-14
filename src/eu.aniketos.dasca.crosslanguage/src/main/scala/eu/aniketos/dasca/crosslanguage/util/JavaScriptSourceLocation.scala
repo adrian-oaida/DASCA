@@ -11,6 +11,7 @@
 package eu.aniketos.dasca.crosslanguage.util
 
 import com.ibm.wala.cast.ir.ssa.AstIRFactory
+import com.ibm.wala.cast.ir.ssa.AstIR
 import com.ibm.wala.classLoader.CallSiteReference
 import com.ibm.wala.ipa.callgraph.CGNode
 import com.ibm.wala.ssa.SSAInstruction
@@ -38,12 +39,12 @@ class JavaScriptSourceLocation(val line: Int, val column: Int, val filePath: Str
 object JavaScriptSourceLocation {
   val JavaScriptPathRegex = """.+/assets/(.+)""".r
 
-  def apply(ir: AstIRFactory#AstIR, inst: SSAInstruction): JavaScriptSourceLocation = {
+  def apply(ir: AstIR, inst: SSAInstruction): JavaScriptSourceLocation = {
     val (line, col, _, _, relPath) = Util.getJavaScriptSourceInfo(ir, inst)
     new JavaScriptSourceLocation(line, col, relPath)
   }
 
-  def apply(ir: AstIRFactory#AstIR, csr: CallSiteReference): JavaScriptSourceLocation = apply(ir, ir.getCalls(csr)(0))
+  def apply(ir: AstIR, csr: CallSiteReference): JavaScriptSourceLocation = apply(ir, ir.getCalls(csr)(0))
 
-  def apply(ir: AstIRFactory#AstIR): JavaScriptSourceLocation = apply(ir, ir.getInstructions.find({ i => i != null }).get)
+  def apply(ir: AstIR): JavaScriptSourceLocation = apply(ir, ir.getInstructions.find({ i => i != null }).get)
 }

@@ -11,6 +11,7 @@
 package eu.aniketos.dasca.crosslanguage.util
 
 import com.ibm.wala.cast.ir.ssa.AstIRFactory
+import com.ibm.wala.cast.ir.ssa.AstIR
 import com.ibm.wala.classLoader.Language
 import com.ibm.wala.ipa.callgraph.CGNode
 import com.ibm.wala.ssa.SSAInstruction
@@ -29,6 +30,7 @@ import eu.aniketos.dasca.crosslanguage.builder.ReplacePluginDefinesAndRequires
 import eu.aniketos.dasca.crosslanguage.builder.FilterJSFrameworks
 import eu.aniketos.dasca.crosslanguage.builder.PreciseJS
 import eu.aniketos.dasca.crosslanguage.builder.RunBuildersInParallel
+import com.ibm.wala.dalvik.classLoader.DexIMethod
 
 object Util {
   val cachedDalvikLines = Map[(CGNode, SSAInstruction), Int]()
@@ -40,7 +42,10 @@ object Util {
     val path = node.getMethod.getReference.getDeclaringClass.getName.toString().substring(1)
     val className = path.substring(path.lastIndexOf('/') + 1)
     val method = node.getMethod.getName.toString()
-    val line = node.getMethod.getLineNumber(inst.iindex)
+    val line = node.getMethod match{
+      case g2: DexIMethod => g2.getCodeLineNumber(inst.iindex)
+      case _ => node.getMethod.getLineNumber(inst.iindex)
+    }
     (line, path, className, method)
   }
 
@@ -50,7 +55,7 @@ object Util {
   }
 
   val JavaScriptPathRegex = """.+/assets/(.+)""".r
-  def getJavaScriptSourceInfo(ir: AstIRFactory#AstIR, inst: SSAInstruction) = {
+  def getJavaScriptSourceInfo(ir: AstIR, inst: SSAInstruction) = {
     val sourcePos = ir.getMethod.getSourcePosition(inst.iindex) match {
       case iPos: IncludedPosition => iPos.getIncludePosition
       case sp => sp
@@ -72,7 +77,7 @@ object Util {
       s"$className:$line, Method: $method, Path: $path"
     } else {
       node.getIR match {
-        case ir: AstIRFactory#AstIR => {
+        case ir: AstIR => {
           val (line, col, start, end, relPath) = getJavaScriptSourceInfo(ir, inst)
           val fileName = relPath.substring(relPath.lastIndexOf('/') + 1)
           s"$fileName:$line:$col ($start -> $end), Path: $relPath"
