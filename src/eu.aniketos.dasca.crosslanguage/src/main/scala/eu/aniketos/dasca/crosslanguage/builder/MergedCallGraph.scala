@@ -236,6 +236,8 @@ class MergedCallGraph(val javaCG: CallGraph, val javaICFG: ICFGSupergraph,  val 
     if (declaredTarget.getName().toString() == "success")
       return true
 
+    if (declaredTarget.getName().toString() == "sendPluginResult")
+      return true
     if (declaredTarget.getName().toString() == "sendPluginResult" && isPossibleStatus(node, csr, "OK"))
       return true
 

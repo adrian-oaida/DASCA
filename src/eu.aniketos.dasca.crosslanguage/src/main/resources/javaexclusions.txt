@@ -5,4 +5,8 @@ sun\/swing\/.*
 com\/sun\/.*
 sun\/.*
 dalvik\/.*
-
+android\/.*
+com.android\/.*
+java\/io\/.*
+java\/net\/.*
+com\/google\/.*

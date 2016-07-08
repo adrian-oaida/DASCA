@@ -86,20 +86,19 @@ import java.util.jar.JarFile
 import com.ibm.wala.types.ClassLoaderReference
 import com.ibm.wala.classLoader.JarFileModule
 import com.ibm.wala.dalvik.classLoader.DexFileModule
-
+import java.util.LinkedHashSet
 object CordovaCGBuilder {
   val ExecuteSuffix = "walaexec"
-  val ExclusionFile = new File("jsexclusions.txt")
-  def apply(apk: File): CordovaCGBuilder = {
+  def apply(apk: File, jsExclusions: java.util.List[String], jsInclusions: java.util.List[File]): CordovaCGBuilder = {
     val tmpApkDir = new File("/tmp/dasca/", s"${apk.getName}-${Random.alphanumeric.take(16).mkString}")
     tmpApkDir.deleteOnExit()
-    CordovaCGBuilder(apk, tmpApkDir)
+    CordovaCGBuilder(apk, tmpApkDir, jsExclusions, jsInclusions)
   }
 
-  def apply(apk: File, tmpApkDir: File): CordovaCGBuilder = new CordovaCGBuilder(apk, tmpApkDir)
+  def apply(apk: File, tmpApkDir: File, jsExclusions: java.util.List[String], jsInclusions: java.util.List[File]): CordovaCGBuilder = new CordovaCGBuilder(apk, tmpApkDir, jsExclusions, jsInclusions)
 }
 
-class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
+class CordovaCGBuilder(val apk: File, val apkUnzipDir: File, val excludedJSLibs: java.util.List[String], val includedJSLibs: java.util.List[File]) {
   val PluginsRegex = """(?s).*\.exports\s*=\s*(.+]).*""".r
   implicit val logger = Logger(LoggerFactory.getLogger(getClass.toString))
 
@@ -109,7 +108,6 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
   var filterJSFrameworks = true
   var preciseJS = false
   var runBuildersInParallel = false
-
   def waitForFutures(fut1: Future[Any], fut2: Future[Any]) = {
     while (fut1.value.isEmpty || fut2.value.isEmpty) {
       for (value <- fut1.value if value.isFailure) {
@@ -186,9 +184,18 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
   def createJavaScriptCallGraph: (CallGraph, ICFGSupergraph, Elem) = {
         
     decodeApk(apk)
-     val configXml = XML.loadFile(new File(apkUnzipDir, "/res/xml/config.xml"))
+    val xmlFile = new File(apkUnzipDir, "/res/xml/config.xml");
+    if(! xmlFile.exists()){
+       logger.error(s"Could not find config.xml, using an empty call graph ...")
+       return (new EmptyCallGraph(), null, null)
+ 
+    }
+     val configXml = XML.loadFile(xmlFile)
      val entrypoint = getEntryPoint(configXml)
-
+     if (!entrypoint.exists()) {
+       logger.error(s"Could not find entrypoint $entrypoint, using an empty call graph ...")
+       return (new EmptyCallGraph(), null, configXml)
+     }
      val pluginInfos = getPluginInfos
     val loaders = new WebPageLoaderFactory(new CAstRhinoTranslatorFactory())
     
@@ -198,6 +205,7 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
     val cache = new AnalysisCache(AstIRFactory.makeDefaultFactory())
     val scope = new CAstAnalysisScope(scripts.toArray, loaders, Collections.singleton(JavaScriptLoader.JS))
     val cha = ClassHierarchy.make(scope, loaders, JavaScriptLoader.JS)
+    
     val roots = JSCallGraphUtil.makeScriptRoots(cha)
     val options = JSCallGraphUtil.makeOptions(scope, cha, roots)
     try {
@@ -222,6 +230,10 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
     val lb = new ListBuffer[SourceModule]()
     lb += new SourceURLModule(CordovaCGBuilder.getClass.getClassLoader.getResource("prologue.js"))
     lb += new SourceURLModule(CordovaCGBuilder.getClass.getClassLoader.getResource("preamble.js"))
+    for(jsLibURl <- includedJSLibs.asScala.map { _.toURI().toURL()}){
+      lb+= new SourceURLModule(jsLibURl)
+    }
+    
     for (info <- pluginInfos) lb += new SourceURLModule(info.file.toURI().toURL())
 
     val extractor = new AllScriptsExtractor(apkUnzipDir)
@@ -409,8 +421,9 @@ class CordovaCGBuilder(val apk: File, val apkUnzipDir: File) {
     entryPoint
   }
 
-  lazy val jsExclusions = if (ExclusionFile.isFile() && ExclusionFile.canRead()) {
-    FileUtils.readLines(ExclusionFile).asScala.map { _.r.unanchored }.toList
+  lazy val jsExclusions = if (excludedJSLibs != null && !excludedJSLibs.isEmpty) {
+    
+    excludedJSLibs.asScala.map { _.r.unanchored }.toList
   } else {
     List.empty
   }

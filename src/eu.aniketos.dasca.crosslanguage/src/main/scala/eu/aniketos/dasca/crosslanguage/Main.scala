@@ -27,7 +27,8 @@ import java.io.ObjectInputStream
 import java.io.NotSerializableException
 import com.ibm.wala.ipa.callgraph.CallGraph
 import com.ibm.wala.util.strings.Atom;
-
+import org.apache.commons.io.FileUtils
+import java.util.ArrayList
 import org.mozilla.javascript.serialize.ScriptableOutputStream
 import eu.aniketos.dasca.crosslanguage.builder.algorithms.ReachabilityChecker
 
@@ -87,12 +88,13 @@ object Main {
 //        val apk = if (args(0).charAt(0) == '-') new File(args(1)) else new File(args(0))
 
         
-        val apk = new File("depend/DVHMA.apk")
+        val apk = new File("depend/WhodiniConsumer-2.9.0.2.apk")
                     val options = List()
                         implicit val logger = Logger(LoggerFactory.getLogger(getClass.toString))
                         
 //                        val apk = new File("depend/WhodiniConsumer-2.9.0.2.apk")
-                                  val builder = CordovaCGBuilder(apk)
+                                  
+                                  val builder = CordovaCGBuilder(apk, FileUtils.readLines(new File("jsexclusions.txt")), List(new File("defer.js")).asJava)
                                   builder.setOptions(options: _*)
                                   val mcg = builder.createCallGraph
                                   for (line <- Util.prettyPrintCrossTargets(mcg.getAllCrossTargets)) logger.info(line)
